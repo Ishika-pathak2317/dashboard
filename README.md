@@ -69,7 +69,7 @@ NexusIQ/
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/nexusiq.git
+git clone https://github.com/ishika-pathak2317/nexusiq.git
 cd nexusiq
 ```
 
