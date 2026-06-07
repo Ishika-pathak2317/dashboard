@@ -13,7 +13,7 @@
 
 **A full-stack business analytics dashboard with 3D visualizations, real-time KPIs, and Tableau export — built with Python, Pandas, Flask, and Three.js.**
 
-[Live Demo](#) · [Report Bug](issues) · [Request Feature](issues)
+[Live Demo](https://dashboard.vercel.app) · [Report Bug](issues) · [Request Feature](issues)
 
 </div>
 
@@ -69,8 +69,8 @@ NexusIQ/
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/ishika-pathak2317/nexusiq.git
-cd nexusiq
+git clone https://github.com/ishika-pathak2317/dashboard.git
+cd dashboard
 ```
 
 ### 2. Create virtual environment
