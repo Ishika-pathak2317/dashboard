@@ -48,7 +48,7 @@ def get_df():
 @app.route("/")
 def index():
     """Serve the dashboard HTML."""
-    return send_from_directory("static", "index.html")
+    return send_from_directory("index.html")
 
 
 @app.route("/api/kpis")
