@@ -1,147 +1,116 @@
 -- ============================================================
---  ANALYTICS DASHBOARD — KPI & REPORTING QUERIES
+--  ANALYTICS DASHBOARD — DATABASE SCHEMA & SEED DATA
+--  Compatible with: PostgreSQL 14+ / MySQL 8+ / SQLite 3
 -- ============================================================
 
--- ── KPI 1: Total Revenue (closed_won only) ───────────────────
-SELECT
-    ROUND(SUM(quantity * unit_price * (1 - discount_pct / 100.0)), 2) AS total_revenue
-FROM orders
-WHERE status = 'closed_won';
+-- ── 1. DROP & CREATE ─────────────────────────────────────────
 
--- ── KPI 2: Gross Profit ──────────────────────────────────────
-SELECT
-    ROUND(SUM(
-        o.quantity * (o.unit_price * (1 - o.discount_pct / 100.0) - p.cost_price)
-    ), 2) AS gross_profit
-FROM orders o
-JOIN products p ON o.product_id = p.product_id
-WHERE o.status = 'closed_won';
+DROP TABLE IF EXISTS orders;
+DROP TABLE IF EXISTS customers;
+DROP TABLE IF EXISTS products;
+DROP TABLE IF EXISTS regions;
+DROP TABLE IF EXISTS sales_reps;
 
--- ── KPI 3: Active Customers ──────────────────────────────────
-SELECT COUNT(DISTINCT customer_id) AS active_customers
-FROM orders
-WHERE status = 'closed_won'
-  AND order_date >= DATE_TRUNC('year', CURRENT_DATE);
+CREATE TABLE regions (
+    region_id   SERIAL PRIMARY KEY,
+    name        VARCHAR(60) NOT NULL,
+    code        VARCHAR(10) UNIQUE NOT NULL
+);
 
--- ── KPI 4: Average Order Value ───────────────────────────────
-SELECT
-    ROUND(AVG(quantity * unit_price * (1 - discount_pct / 100.0)), 2) AS avg_order_value
-FROM orders
-WHERE status = 'closed_won';
+CREATE TABLE sales_reps (
+    rep_id      SERIAL PRIMARY KEY,
+    full_name   VARCHAR(100) NOT NULL,
+    email       VARCHAR(120) UNIQUE NOT NULL,
+    region_id   INT REFERENCES regions(region_id),
+    hired_date  DATE NOT NULL
+);
 
--- ── KPI 5: Churn Rate (% customers with no order last 90 days) ─
-SELECT
-    ROUND(
-        100.0 * COUNT(CASE WHEN last_order < CURRENT_DATE - 90 THEN 1 END)
-              / NULLIF(COUNT(*), 0),
-    2) AS churn_rate_pct
-FROM (
-    SELECT customer_id, MAX(order_date) AS last_order
-    FROM orders WHERE status = 'closed_won'
-    GROUP BY customer_id
-) sub;
+CREATE TABLE products (
+    product_id   SERIAL PRIMARY KEY,
+    name         VARCHAR(120) NOT NULL,
+    category     VARCHAR(60)  NOT NULL,   -- SaaS / Enterprise / SMB / Other
+    unit_price   NUMERIC(10,2) NOT NULL,
+    cost_price   NUMERIC(10,2) NOT NULL
+);
 
--- ── REPORT 1: Monthly Revenue vs Target ──────────────────────
-SELECT
-    DATE_TRUNC('month', order_date) AS month,
-    ROUND(SUM(quantity * unit_price * (1 - discount_pct / 100.0)), 2) AS revenue,
-    ROUND(SUM(o.quantity * (o.unit_price * (1 - o.discount_pct/100.0) - p.cost_price)), 2) AS profit
-FROM orders o
-JOIN products p ON o.product_id = p.product_id
-WHERE o.status = 'closed_won'
-  AND o.order_date >= DATE_TRUNC('year', CURRENT_DATE)
-GROUP BY 1
-ORDER BY 1;
+CREATE TABLE customers (
+    customer_id  SERIAL PRIMARY KEY,
+    company_name VARCHAR(150) NOT NULL,
+    segment      VARCHAR(40)  NOT NULL,   -- Enterprise / SMB / Startup
+    region_id    INT REFERENCES regions(region_id),
+    created_at   TIMESTAMP DEFAULT NOW(),
+    nps_score    INT CHECK (nps_score BETWEEN 0 AND 100)
+);
 
--- ── REPORT 2: Revenue by Segment ─────────────────────────────
-SELECT
-    c.segment,
-    ROUND(SUM(o.quantity * o.unit_price * (1 - o.discount_pct/100.0)), 2) AS revenue,
-    COUNT(DISTINCT o.customer_id) AS num_customers
-FROM orders o
-JOIN customers c ON o.customer_id = c.customer_id
-WHERE o.status = 'closed_won'
-GROUP BY c.segment
-ORDER BY revenue DESC;
+CREATE TABLE orders (
+    order_id     SERIAL PRIMARY KEY,
+    customer_id  INT  REFERENCES customers(customer_id),
+    product_id   INT  REFERENCES products(product_id),
+    rep_id       INT  REFERENCES sales_reps(rep_id),
+    quantity     INT  NOT NULL DEFAULT 1,
+    unit_price   NUMERIC(10,2) NOT NULL,
+    discount_pct NUMERIC(5,2)  DEFAULT 0,
+    status       VARCHAR(20)   NOT NULL DEFAULT 'closed_won',
+                                        -- leads / qualified / proposal /
+                                        -- negotiation / closed_won / lost
+    order_date   DATE NOT NULL,
+    closed_date  DATE
+);
 
--- ── REPORT 3: Revenue by Region ──────────────────────────────
-SELECT
-    r.name  AS region,
-    r.code,
-    ROUND(SUM(o.quantity * o.unit_price * (1 - o.discount_pct/100.0)), 2) AS revenue,
-    COUNT(DISTINCT o.customer_id) AS customers
-FROM orders o
-JOIN customers c ON o.customer_id = c.customer_id
-JOIN regions  r ON c.region_id   = r.region_id
-WHERE o.status = 'closed_won'
-GROUP BY r.region_id, r.name, r.code
-ORDER BY revenue DESC;
+-- ── 2. INDEXES ───────────────────────────────────────────────
 
--- ── REPORT 4: Sales Funnel ───────────────────────────────────
-SELECT
-    status,
-    COUNT(*) AS count,
-    ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS pct_of_total
-FROM orders
-GROUP BY status
-ORDER BY
-    CASE status
-        WHEN 'leads'        THEN 1
-        WHEN 'qualified'    THEN 2
-        WHEN 'proposal'     THEN 3
-        WHEN 'negotiation'  THEN 4
-        WHEN 'closed_won'   THEN 5
-        WHEN 'lost'         THEN 6
-    END;
+CREATE INDEX idx_orders_date     ON orders(order_date);
+CREATE INDEX idx_orders_customer ON orders(customer_id);
+CREATE INDEX idx_orders_status   ON orders(status);
+CREATE INDEX idx_customers_seg   ON customers(segment);
+CREATE INDEX idx_customers_reg   ON customers(region_id);
 
--- ── REPORT 5: Top Accounts ───────────────────────────────────
-SELECT
-    c.company_name,
-    c.segment,
-    r.code AS region,
-    ROUND(SUM(o.quantity * o.unit_price * (1 - o.discount_pct/100.0)), 2) AS revenue,
-    COUNT(o.order_id) AS num_orders,
-    c.nps_score,
-    CASE
-        WHEN c.nps_score >= 70                              THEN 'Healthy'
-        WHEN c.nps_score BETWEEN 50 AND 69                  THEN 'At Risk'
-        ELSE                                                     'Churn Risk'
-    END AS health_status
-FROM orders o
-JOIN customers c ON o.customer_id = c.customer_id
-JOIN regions   r ON c.region_id   = r.region_id
-WHERE o.status = 'closed_won'
-GROUP BY c.customer_id, c.company_name, c.segment, r.code, c.nps_score
-ORDER BY revenue DESC
-LIMIT 20;
+-- ── 3. SEED DATA ─────────────────────────────────────────────
 
--- ── REPORT 6: Rep Performance ────────────────────────────────
-SELECT
-    sr.full_name,
-    r.name AS region,
-    COUNT(CASE WHEN o.status = 'closed_won' THEN 1 END) AS won,
-    COUNT(CASE WHEN o.status = 'lost'       THEN 1 END) AS lost,
-    ROUND(
-        100.0 * COUNT(CASE WHEN o.status = 'closed_won' THEN 1 END)
-              / NULLIF(COUNT(CASE WHEN o.status IN ('closed_won','lost') THEN 1 END), 0),
-    1) AS win_rate_pct,
-    ROUND(SUM(CASE WHEN o.status = 'closed_won'
-        THEN o.quantity * o.unit_price * (1 - o.discount_pct/100.0)
-        ELSE 0 END), 2) AS revenue
-FROM orders o
-JOIN sales_reps sr ON o.rep_id     = sr.rep_id
-JOIN regions    r  ON sr.region_id = r.region_id
-GROUP BY sr.rep_id, sr.full_name, r.name
-ORDER BY revenue DESC;
+INSERT INTO regions (name, code) VALUES
+  ('North America', 'NAMER'),
+  ('Europe Middle East Africa', 'EMEA'),
+  ('Asia Pacific', 'APAC'),
+  ('Latin America', 'LATAM'),
+  ('Middle East Africa', 'MEA');
 
--- ── REPORT 7: Period Comparison (YoY / QoQ) ──────────────────
-SELECT
-    EXTRACT(YEAR  FROM order_date) AS yr,
-    EXTRACT(QUARTER FROM order_date) AS qtr,
-    ROUND(SUM(quantity * unit_price * (1 - discount_pct/100.0)), 2) AS revenue,
-    COUNT(DISTINCT customer_id) AS customers,
-    COUNT(order_id) AS orders
-FROM orders
-WHERE status = 'closed_won'
-GROUP BY 1, 2
-ORDER BY 1, 2;
+INSERT INTO sales_reps (full_name, email, region_id, hired_date) VALUES
+  ('Alice Monroe',    'alice@company.com',   1, '2021-03-15'),
+  ('Bruno Silva',     'bruno@company.com',   2, '2020-07-01'),
+  ('Chen Wei',        'chen@company.com',    3, '2022-01-10'),
+  ('Diana Patel',     'diana@company.com',   4, '2023-04-20'),
+  ('Ethan Müller',    'ethan@company.com',   2, '2019-11-05');
+
+INSERT INTO products (name, category, unit_price, cost_price) VALUES
+  ('Analytics Pro',       'SaaS',       299.00, 45.00),
+  ('Enterprise Suite',    'Enterprise', 1499.00, 320.00),
+  ('SMB Starter Pack',    'SMB',         99.00, 18.00),
+  ('Data Connector API',  'SaaS',       199.00, 30.00),
+  ('Custom Integration',  'Other',      799.00, 200.00);
+
+INSERT INTO customers (company_name, segment, region_id, nps_score) VALUES
+  ('Meridian Corp',        'Enterprise', 1, 74),
+  ('Bluewave Systems',     'Enterprise', 2, 68),
+  ('Fortis Analytics',     'Enterprise', 1, 55),
+  ('Kinara Technologies',  'SMB',        3, 81),
+  ('Vantage Retail',       'SMB',        2, 49),
+  ('Crestline Media',      'Enterprise', 1, 38),
+  ('Luminate SaaS',        'SMB',        4, 88),
+  ('Syntech Partners',     'SMB',        1, 72);
+
+-- Sample orders spread across FY 2024 (add more as needed)
+INSERT INTO orders (customer_id, product_id, rep_id, quantity, unit_price, discount_pct, status, order_date, closed_date) VALUES
+  (1, 2, 1, 1, 1499.00, 5,  'closed_won',  '2024-01-10', '2024-02-14'),
+  (2, 2, 2, 1, 1499.00, 0,  'closed_won',  '2024-01-22', '2024-03-01'),
+  (3, 1, 1, 3, 299.00,  10, 'closed_won',  '2024-02-05', '2024-03-20'),
+  (4, 3, 3, 5, 99.00,   0,  'closed_won',  '2024-03-11', '2024-04-02'),
+  (5, 3, 2, 2, 99.00,   0,  'negotiation', '2024-04-15', NULL),
+  (6, 4, 1, 1, 199.00,  15, 'closed_won',  '2024-05-01', '2024-05-28'),
+  (7, 3, 4, 4, 99.00,   0,  'closed_won',  '2024-06-18', '2024-07-10'),
+  (8, 1, 1, 2, 299.00,  5,  'closed_won',  '2024-07-22', '2024-08-15'),
+  (1, 5, 5, 1, 799.00,  0,  'closed_won',  '2024-08-03', '2024-09-01'),
+  (2, 4, 2, 2, 199.00,  0,  'closed_won',  '2024-09-10', '2024-10-05'),
+  (3, 2, 1, 1, 1499.00, 10, 'lost',        '2024-10-01', '2024-10-30'),
+  (4, 1, 3, 6, 299.00,  0,  'closed_won',  '2024-11-05', '2024-12-01'),
+  (7, 2, 4, 1, 1499.00, 0,  'proposal',    '2024-12-01', NULL),
+  (8, 5, 1, 1, 799.00,  5,  'closed_won',  '2024-12-15', '2024-12-28');
